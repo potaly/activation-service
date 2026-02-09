@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ActivateRequest, License, ApiResponse } from '@/lib/types';
-import { findCode, markCodeAsUsed } from '@/lib/storage';
+import { findCode, markCodeAsUsed, isCodeUsed } from '@/lib/storage';
 import { signData } from '@/lib/crypto';
 
 const ALLOWED_APP_IDS = ['moments_ai'];
@@ -54,8 +54,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 检查是否已使用
-    if (activationCode.used) {
+    // 检查是否已使用（包括内存缓存）
+    if (activationCode.used || isCodeUsed(code)) {
+      console.log(`Code already used: ${code}`);
       return NextResponse.json<ApiResponse>(
         {
           ok: false,
@@ -140,14 +141,20 @@ export async function POST(request: NextRequest) {
       ok: true,
       license,
     });
-  } catch (error) {
+  } catch (error: any) {
+    // 详细的错误日志
     console.error('Activation error:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Error message:', error.message);
+    
     return NextResponse.json<ApiResponse>(
       {
         ok: false,
         error: {
           code: 'INVALID_REQUEST',
-          message: '服务器内部错误',
+          message: process.env.NODE_ENV === 'development' 
+            ? `服务器内部错误: ${error.message}`
+            : '服务器内部错误',
         },
       },
       { status: 500 }

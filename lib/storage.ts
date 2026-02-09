@@ -4,99 +4,119 @@ import { ActivationCode } from './types';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const CODES_FILE = path.join(DATA_DIR, 'codes.json');
-const USED_CODES_FILE = path.join(DATA_DIR, 'used_codes.json');
+
+// 内存缓存：已使用的激活码
+// 注意：Vercel Serverless 是无状态的，每次请求可能在不同实例
+// 这个缓存只在单个实例生命周期内有效
+const usedCodesCache = new Map<string, ActivationCode>();
 
 /**
- * 确保数据目录和文件存在
- */
-function ensureDataFiles() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  
-  if (!fs.existsSync(CODES_FILE)) {
-    fs.writeFileSync(CODES_FILE, JSON.stringify([], null, 2));
-  }
-  
-  if (!fs.existsSync(USED_CODES_FILE)) {
-    fs.writeFileSync(USED_CODES_FILE, JSON.stringify([], null, 2));
-  }
-}
-
-/**
- * 读取所有激活码
+ * 读取所有激活码（从只读文件）
  */
 export function getAllCodes(): ActivationCode[] {
-  ensureDataFiles();
-  const data = fs.readFileSync(CODES_FILE, 'utf-8');
-  return JSON.parse(data);
-}
-
-/**
- * 读取已使用的激活码
- */
-export function getUsedCodes(): ActivationCode[] {
-  ensureDataFiles();
-  const data = fs.readFileSync(USED_CODES_FILE, 'utf-8');
-  return JSON.parse(data);
+  try {
+    const data = fs.readFileSync(CODES_FILE, 'utf-8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('Failed to read codes file:', error);
+    return [];
+  }
 }
 
 /**
  * 查找激活码
  */
 export function findCode(code: string): ActivationCode | null {
+  // 先检查内存缓存
+  if (usedCodesCache.has(code)) {
+    return usedCodesCache.get(code)!;
+  }
+  
+  // 从文件中查找
   const allCodes = getAllCodes();
-  const usedCodes = getUsedCodes();
-  
-  // 先在未使用的激活码中查找
   const foundCode = allCodes.find(c => c.code === code);
-  if (foundCode) return foundCode;
   
-  // 再在已使用的激活码中查找
-  const usedCode = usedCodes.find(c => c.code === code);
-  if (usedCode) return usedCode;
-  
-  return null;
+  return foundCode || null;
 }
 
 /**
- * 标记激活码为已使用
+ * 检查激活码是否已使用
+ */
+export function isCodeUsed(code: string): boolean {
+  // 检查内存缓存
+  if (usedCodesCache.has(code)) {
+    const cachedCode = usedCodesCache.get(code)!;
+    return cachedCode.used === true;
+  }
+  
+  // 从文件中检查
+  const foundCode = findCode(code);
+  if (!foundCode) return false;
+  
+  return foundCode.used === true;
+}
+
+/**
+ * 标记激活码为已使用（仅在内存中）
+ * 
+ * 注意：由于 Vercel Serverless 是只读文件系统，无法持久化到文件。
+ * 这个实现使用内存缓存，但有以下限制：
+ * 1. 缓存只在单个实例生命周期内有效
+ * 2. 不同实例之间不共享状态
+ * 3. 实例重启后缓存丢失
+ * 
+ * 生产环境建议使用：
+ * - Vercel KV (Redis)
+ * - Vercel Postgres
+ * - 外部数据库
  */
 export function markCodeAsUsed(code: string, deviceHash: string): boolean {
-  ensureDataFiles();
+  const foundCode = findCode(code);
+  if (!foundCode) {
+    console.error(`Code not found: ${code}`);
+    return false;
+  }
   
-  const allCodes = getAllCodes();
-  const usedCodes = getUsedCodes();
+  // 检查是否已使用
+  if (isCodeUsed(code)) {
+    console.warn(`Code already used: ${code}`);
+    return false;
+  }
   
-  // 从未使用列表中找到激活码
-  const index = allCodes.findIndex(c => c.code === code);
-  if (index === -1) return false;
+  // 更新激活码状态（仅在内存中）
+  const usedCode: ActivationCode = {
+    ...foundCode,
+    used: true,
+    used_at: new Date().toISOString(),
+    device_hash: deviceHash,
+  };
   
-  // 更新激活码状态
-  const activationCode = allCodes[index];
-  activationCode.used = true;
-  activationCode.used_at = new Date().toISOString();
-  activationCode.device_hash = deviceHash;
+  // 保存到内存缓存
+  usedCodesCache.set(code, usedCode);
   
-  // 从未使用列表中移除
-  allCodes.splice(index, 1);
-  
-  // 添加到已使用列表
-  usedCodes.push(activationCode);
-  
-  // 保存到文件
-  fs.writeFileSync(CODES_FILE, JSON.stringify(allCodes, null, 2));
-  fs.writeFileSync(USED_CODES_FILE, JSON.stringify(usedCodes, null, 2));
-  
+  console.log(`Code marked as used (in-memory): ${code}`);
   return true;
 }
 
 /**
- * 添加激活码（用于生成脚本）
+ * 获取激活码统计信息
  */
-export function addCodes(codes: ActivationCode[]): void {
-  ensureDataFiles();
+export function getCodesStats() {
   const allCodes = getAllCodes();
-  allCodes.push(...codes);
-  fs.writeFileSync(CODES_FILE, JSON.stringify(allCodes, null, 2));
+  const usedInCache = usedCodesCache.size;
+  const usedInFile = allCodes.filter(c => c.used === true).length;
+  
+  return {
+    total: allCodes.length,
+    used_in_cache: usedInCache,
+    used_in_file: usedInFile,
+    available: allCodes.length - usedInFile - usedInCache,
+  };
+}
+
+/**
+ * 获取已使用的激活码列表（从缓存）
+ */
+export function getUsedCodesFromCache(): ActivationCode[] {
+  return Array.from(usedCodesCache.values());
 }
