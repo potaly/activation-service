@@ -17,9 +17,11 @@ export async function generateKeyPair() {
  * 对数据进行签名
  */
 export async function signData(data: any, privateKeyBase64: string): Promise<string> {
-  // 生成 canonical JSON（字段排序，无空格）
-  const sortedKeys = Object.keys(data).sort();
-  const canonicalJson = JSON.stringify(data, sortedKeys, 0).replace(/\s/g, '');
+  // 生成 canonical JSON（与 Python json.dumps(sort_keys=True, separators=(',', ':')) 一致）
+  const canonicalJson = JSON.stringify(data, Object.keys(data).sort(), 0)
+    .replace(/\s+/g, '')  // 移除所有空白
+    .replace(/,/g, ',')   // 确保逗号后无空格
+    .replace(/:/g, ':');  // 确保冒号后无空格
   const message = new TextEncoder().encode(canonicalJson);
   
   const privateKey = Buffer.from(privateKeyBase64, 'base64');
@@ -36,8 +38,11 @@ export async function verifySignature(
   signatureBase64: string,
   publicKeyBase64: string
 ): Promise<boolean> {
-  const sortedKeys = Object.keys(data).sort();
-  const canonicalJson = JSON.stringify(data, sortedKeys, 0).replace(/\s/g, '');
+  // 生成 canonical JSON（与 signData 一致）
+  const canonicalJson = JSON.stringify(data, Object.keys(data).sort(), 0)
+    .replace(/\s+/g, '')
+    .replace(/,/g, ',')
+    .replace(/:/g, ':');
   const message = new TextEncoder().encode(canonicalJson);
   
   const signature = Buffer.from(signatureBase64, 'base64');
