@@ -18,7 +18,8 @@ export async function generateKeyPair() {
  */
 export async function signData(data: any, privateKeyBase64: string): Promise<string> {
   // 生成 canonical JSON（字段排序，无空格）
-  const canonicalJson = JSON.stringify(data, Object.keys(data).sort());
+  const sortedKeys = Object.keys(data).sort();
+  const canonicalJson = JSON.stringify(data, sortedKeys, 0).replace(/\s/g, '');
   const message = new TextEncoder().encode(canonicalJson);
   
   const privateKey = Buffer.from(privateKeyBase64, 'base64');
@@ -35,7 +36,8 @@ export async function verifySignature(
   signatureBase64: string,
   publicKeyBase64: string
 ): Promise<boolean> {
-  const canonicalJson = JSON.stringify(data, Object.keys(data).sort());
+  const sortedKeys = Object.keys(data).sort();
+  const canonicalJson = JSON.stringify(data, sortedKeys, 0).replace(/\s/g, '');
   const message = new TextEncoder().encode(canonicalJson);
   
   const signature = Buffer.from(signatureBase64, 'base64');
