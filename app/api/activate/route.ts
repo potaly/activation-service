@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ActivateRequest, License, ApiResponse } from '@/lib/types';
-import { findCode, markCodeAsUsedAtomic } from '@/lib/storage-redis';
+import { codeExists, markCodeAsUsed } from '@/lib/storage-redis';
 import { signData } from '@/lib/crypto';
 
 const ALLOWED_APP_IDS = ['moments_ai'];
+const LICENSE_EXPIRES_AT = '2099-12-31T23:59:59Z';
 
 export async function POST(request: NextRequest) {
   try {
@@ -45,10 +46,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 查找激活码
-    console.log(`[Activate] Looking up activation code: ${code}`);
-    const activationCode = await findCode(code);
-    if (!activationCode) {
+    // 检查激活码是否存在
+    console.log(`[Activate] Checking if code exists: ${code}`);
+    const exists = await codeExists(code);
+    if (!exists) {
       console.log(`[Activate] Code not found: ${code}`);
       return NextResponse.json<ApiResponse>(
         {
@@ -62,37 +63,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log(`[Activate] Found activation code: ${code}, plan=${activationCode.plan}`);
+    console.log(`[Activate] Code exists: ${code}`);
 
-    // 检查是否过期
-    const expiresAt = new Date(activationCode.expires_at);
-    if (expiresAt < new Date()) {
-      console.log(`[Activate] Code expired: ${code}, expires_at=${activationCode.expires_at}`);
-      return NextResponse.json<ApiResponse>(
-        {
-          ok: false,
-          error: {
-            code: 'CODE_EXPIRED',
-            message: '激活码已过期',
-          },
-        },
-        { status: 400 }
-      );
-    }
-
-    // 生成 license
+    // 生成 license ID
     const now = new Date();
     const licenseId = `LIC-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
 
     console.log(`[Activate] Generated license_id: ${licenseId}`);
 
-    // 原子性标记激活码为已使用（在生成签名之前）
-    // 使用 SETNX 确保只有一个请求能成功
-    console.log(`[Activate] Attempting atomic mark as used: ${code}`);
-    const marked = await markCodeAsUsedAtomic(code, device_hash, licenseId);
+    // 原子性标记激活码为已使用
+    console.log(`[Activate] Attempting to mark code as used: ${code}`);
+    const marked = await markCodeAsUsed(code, device_hash, licenseId);
     
     if (!marked) {
-      console.log(`[Activate] Code already used (atomic check failed): ${code}`);
+      console.log(`[Activate] Code already used or marking failed: ${code}`);
       return NextResponse.json<ApiResponse>(
         {
           ok: false,
@@ -112,10 +96,10 @@ export async function POST(request: NextRequest) {
       schema_version: 1,
       license_id: licenseId,
       app_id,
-      plan: activationCode.plan,
+      plan: 'lifetime',
       device_hash,
       issued_at: now.toISOString(),
-      expires_at: activationCode.expires_at,
+      expires_at: LICENSE_EXPIRES_AT,
       features: {
         moments_interact: true,
         ai_settings: true,
@@ -131,7 +115,7 @@ export async function POST(request: NextRequest) {
         {
           ok: false,
           error: {
-            code: 'INVALID_REQUEST',
+            code: 'SERVER_ERROR',
             message: '服务器配置错误：缺少私钥',
           },
         },
