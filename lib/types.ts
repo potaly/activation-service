@@ -38,7 +38,7 @@ export interface ActivateResponse {
 export interface ErrorResponse {
   ok: false;
   error: {
-    code: 'CODE_USED' | 'CODE_NOT_FOUND' | 'CODE_EXPIRED' | 'INVALID_APP_ID' | 'INVALID_REQUEST';
+    code: 'CODE_USED' | 'CODE_NOT_FOUND' | 'CODE_EXPIRED' | 'INVALID_APP_ID' | 'INVALID_REQUEST' | 'SERVER_ERROR';
     message: string;
   };
 }
