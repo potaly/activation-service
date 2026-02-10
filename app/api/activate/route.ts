@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ActivateRequest, License, ApiResponse } from '@/lib/types';
-import { findCode, markCodeAsUsed, isCodeUsed } from '@/lib/storage';
+import { findCode, markCodeAsUsed, isCodeUsed } from '@/lib/storage-redis';
 import { signData } from '@/lib/crypto';
 
 const ALLOWED_APP_IDS = ['moments_ai'];
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 查找激活码
-    const activationCode = findCode(code);
+    const activationCode = await findCode(code);
     if (!activationCode) {
       return NextResponse.json<ApiResponse>(
         {
@@ -54,8 +54,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 检查是否已使用（包括内存缓存）
-    if (activationCode.used || isCodeUsed(code)) {
+    // 检查是否已使用（从 Redis 查询）
+    const codeUsed = await isCodeUsed(code);
+    if (codeUsed) {
       console.log(`Code already used: ${code}`);
       return NextResponse.json<ApiResponse>(
         {
@@ -81,21 +82,6 @@ export async function POST(request: NextRequest) {
           },
         },
         { status: 400 }
-      );
-    }
-
-    // 标记激活码为已使用
-    const success = markCodeAsUsed(code, device_hash);
-    if (!success) {
-      return NextResponse.json<ApiResponse>(
-        {
-          ok: false,
-          error: {
-            code: 'CODE_NOT_FOUND',
-            message: '激活码标记失败',
-          },
-        },
-        { status: 500 }
       );
     }
 
@@ -136,6 +122,9 @@ export async function POST(request: NextRequest) {
     const signature = await signData(license, privateKey);
     license.signature = `ed25519:${signature}`;
 
+    // 标记激活码为已使用（存储到 Redis）
+    await markCodeAsUsed(code, device_hash, licenseId);
+
     // 返回成功响应
     return NextResponse.json<ApiResponse>({
       ok: true,
@@ -151,7 +140,7 @@ export async function POST(request: NextRequest) {
       {
         ok: false,
         error: {
-          code: 'INVALID_REQUEST',
+          code: 'SERVER_ERROR',
           message: process.env.NODE_ENV === 'development' 
             ? `服务器内部错误: ${error.message}`
             : '服务器内部错误',

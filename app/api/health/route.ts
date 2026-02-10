@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCodesStats } from '@/lib/storage';
+import { getStats, healthCheck } from '@/lib/storage-redis';
 
 export async function GET(request: NextRequest) {
   // 检查 ADMIN_TOKEN
@@ -30,24 +30,35 @@ export async function GET(request: NextRequest) {
     }
   }
   
+  // 检查 Redis 连接
+  const redisHealth = await healthCheck();
+  
   // 获取激活码统计
-  const stats = getCodesStats();
+  const stats = await getStats();
+  
+  // 检查环境变量
+  const hasRedisEnv = !!(
+    process.env.KV_REST_API_URL || 
+    process.env.UPSTASH_REDIS_REST_URL ||
+    process.env.REDIS_URL
+  );
   
   return NextResponse.json({
-    status: 'healthy',
+    status: redisHealth.redis_connected ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),
     environment: {
       has_private_key: hasPrivateKey,
       decoded_key_length: decodedKeyLength,
       private_key_error: privateKeyError,
       has_admin_token: !!process.env.ADMIN_TOKEN,
+      has_redis_env: hasRedisEnv,
     },
+    redis: redisHealth,
     codes: stats,
-    warnings: [
-      'Vercel Serverless uses read-only filesystem',
-      'Used codes are cached in memory only',
-      'Cache is lost on instance restart',
-      'Consider using Vercel KV for production',
+    info: [
+      'Using Upstash Redis for persistent storage',
+      'Activation codes are strictly one-time use',
+      'All Serverless instances share the same state',
     ],
   });
 }
