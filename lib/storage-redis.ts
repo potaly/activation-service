@@ -42,9 +42,11 @@ export async function findCode(code: string): Promise<ActivationCode | null> {
 export async function isCodeUsed(code: string): Promise<boolean> {
   try {
     const usageData = await redis.get<any>(`used:${code}`);
-    return usageData !== null && usageData !== undefined;
+    const result = usageData !== null && usageData !== undefined;
+    console.log(`[Redis] isCodeUsed(${code}): ${result}`, usageData ? JSON.stringify(usageData) : 'null');
+    return result;
   } catch (error) {
-    console.error('Redis isCodeUsed error:', error);
+    console.error('[Redis] isCodeUsed error:', error);
     // If Redis fails, we should fail safely by assuming code is not used
     // This prevents blocking legitimate activations due to Redis issues
     return false;
@@ -52,9 +54,47 @@ export async function isCodeUsed(code: string): Promise<boolean> {
 }
 
 /**
- * Mark an activation code as used
+ * Atomically mark an activation code as used
+ * Uses SETNX to ensure only one activation succeeds
+ * Returns true if successfully marked, false if already used
+ */
+export async function markCodeAsUsedAtomic(
+  code: string,
+  deviceHash: string,
+  licenseId: string
+): Promise<boolean> {
+  try {
+    const usageData = {
+      used: true,
+      used_at: new Date().toISOString(),
+      device_hash: deviceHash,
+      license_id: licenseId,
+    };
+    
+    console.log(`[Redis] Attempting atomic markCodeAsUsed for: ${code}`);
+    
+    // Use SETNX (SET if Not eXists) for atomic operation
+    // Returns 1 if key was set, 0 if key already exists
+    const result = await redis.setnx(`used:${code}`, JSON.stringify(usageData));
+    
+    if (result === 1) {
+      // Successfully marked as used, also store device binding
+      await redis.set(`device:${code}`, deviceHash);
+      console.log(`[Redis] Successfully marked code as used: ${code}`);
+      return true;
+    } else {
+      console.log(`[Redis] Code already used (SETNX returned 0): ${code}`);
+      return false;
+    }
+  } catch (error) {
+    console.error('[Redis] markCodeAsUsedAtomic error:', error);
+    throw new Error(`Failed to mark code as used in Redis: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Mark an activation code as used (non-atomic version, for backward compatibility)
  * Stores in Redis with the usage information
- * This operation must be atomic to prevent race conditions
  */
 export async function markCodeAsUsed(
   code: string,
@@ -69,6 +109,8 @@ export async function markCodeAsUsed(
       license_id: licenseId,
     };
     
+    console.log(`[Redis] markCodeAsUsed for: ${code}`);
+    
     // Store usage data in Redis with no expiration (permanent)
     // Key: used:{code}
     // Value: usage data object
@@ -79,10 +121,10 @@ export async function markCodeAsUsed(
     // Value: device_hash
     await redis.set(`device:${code}`, deviceHash);
     
-    console.log(`Code marked as used in Redis: ${code}`);
+    console.log(`[Redis] Code marked as used: ${code}`);
   } catch (error) {
-    console.error('Redis markCodeAsUsed error:', error);
-    throw new Error('Failed to mark code as used in Redis');
+    console.error('[Redis] markCodeAsUsed error:', error);
+    throw new Error(`Failed to mark code as used in Redis: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -97,9 +139,10 @@ export async function getCodeUsage(code: string): Promise<{
 } | null> {
   try {
     const usageData = await redis.get<any>(`used:${code}`);
+    console.log(`[Redis] getCodeUsage(${code}):`, usageData);
     return usageData || null;
   } catch (error) {
-    console.error('Redis getCodeUsage error:', error);
+    console.error('[Redis] getCodeUsage error:', error);
     return null;
   }
 }
@@ -110,9 +153,10 @@ export async function getCodeUsage(code: string): Promise<{
 export async function getCodeDevice(code: string): Promise<string | null> {
   try {
     const deviceHash = await redis.get<string>(`device:${code}`);
+    console.log(`[Redis] getCodeDevice(${code}):`, deviceHash);
     return deviceHash || null;
   } catch (error) {
-    console.error('Redis getCodeDevice error:', error);
+    console.error('[Redis] getCodeDevice error:', error);
     return null;
   }
 }
@@ -146,7 +190,7 @@ export async function getStats(): Promise<{
       redisKeys = keys.length;
     } catch (e) {
       // keys() may not be supported in some Redis configurations
-      console.log('Redis keys() not supported');
+      console.log('[Redis] keys() not supported');
     }
     
     return {
@@ -156,7 +200,7 @@ export async function getStats(): Promise<{
       redis_keys: redisKeys,
     };
   } catch (error) {
-    console.error('Redis getStats error:', error);
+    console.error('[Redis] getStats error:', error);
     return {
       total,
       used: 0,
@@ -175,17 +219,22 @@ export async function healthCheck(): Promise<{
   error?: string;
 }> {
   try {
+    console.log('[Redis] Running health check...');
+    
     // Try to ping Redis
     const result = await redis.ping();
     
     // Get Redis URL (without token)
     const redisUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || 'not set';
     
+    console.log('[Redis] Health check result:', result);
+    
     return {
       redis_connected: result === 'PONG',
       redis_url: redisUrl.replace(/\/\/.*@/, '//*****@'), // Hide credentials
     };
   } catch (error) {
+    console.error('[Redis] Health check error:', error);
     return {
       redis_connected: false,
       redis_url: process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || 'not set',
